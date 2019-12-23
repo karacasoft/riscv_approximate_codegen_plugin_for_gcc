@@ -1,0 +1,72 @@
+To mark approximate regions of code, we have built a plugin for GCC 9.2.0. The plugin
+adds a number of pragma directives and an attribute. The pragma directives are helpful
+for small regions of code (inside of a loop for instance), and the attribute is helpful
+for declaring whole functions as approximate. An example usage of this plugin can be
+seen in (<ref code 1>).
+
+The plugin implements a new pass over the code. This pass is done after the code is
+transformed into an intermediate form called GIMPLE.[1] What the new pass does is it
+checks if a gimple statement is in an approximable region, then checks if the statement
+is a plus, minus or mult expression. If it is, then this GIMPLE statement is replaced
+with a GIMPLE_ASM statement, which is the intermediate form of inline assembly statements
+in C. The replacements done are shown in (<ref figure 1>). Because we set the "r"
+restriction flag in the inline assembly statements, which hints the compiler to
+put the operand into a register, non-register operands of an operation (eg. immediate
+values) are automatically loaded into registers by GCC.
+
+riscv-binutils[2] provides a pseudo assembly directive ".insn"[3] which allows us to insert
+our custom instructions into the resulting binary file. This directive already knows
+some instruction formats. So we choose to have an r-type instruction with the same opcode
+as a normal arithmetic operation. Our funct3 field is always zero and funct7 has its
+most significant bit flipped. We enter these numbers and let the compiler fill
+the register fields itself according to our operands.
+
+We used riscv-gnu-toolchain[4] to test this plugin.
+
+```
+PLUS_EXPR   => asm (".insn r OP, 0, 64, %0, %1, %2" : "=r"(res) : "r"(op1), "r"(op2))
+MINUS_EXPR  => asm (".insn r OP, 0, 96, %0, %1, %2" : "=r"(res) : "r"(op1), "r"(op2))
+MULT_EXPR   => asm (".insn r OP, 0, 65, %0, %1, %2" : "=r"(res) : "r"(op1), "r"(op2))
+``` figure 1
+
+
+```
+int f1() __attribute__((approx));
+
+int f1() {    // <-- Everthing inside this function will be approximated
+	int a = 10;
+	int b = a + 5;
+	int c = b - 10;
+#pragma APPROX xmul start // <-- Has no effect, since the function is already approximated.
+	int d = c * a;
+#pragma APPROX xmul end   // <-- Also has no effect
+	int g = a * c;
+	return b;
+}
+
+int f2() {
+    int a = 10;
+#pragma APPROX xsub start
+	int b = 10 - a;        //    <-- This line will be approximated
+#pragma APPROX xadd start  // <-- Different types of approximate regions can intersect
+    int c = b + a;         //    <-- This line will be approximated
+#pragma APPROX xsub end
+    int d = a + b - c;     //    <-- Only the addition here will be approximated
+#pragma APPROX xadd end
+    return d;
+}
+
+int main() {
+    int a = f2();
+	int b = f1();
+	int c = a + b;
+	int d = f1() + c;
+
+	return 0;
+}
+``` code 1
+
+[1] GCC Online Docs: GIMPLE, https://gcc.gnu.org/onlinedocs/gccint/GIMPLE.html#GIMPLE, accessed on 25/11/2019
+[2] RISC-V binutils, https://github.com/riscv/riscv-binutils-gdb, accessed on 25/11/2019
+[3] GNU-AS Machine Specific Features: RISC-V Instruction Formats, https://embarc.org/man-pages/as/RISC_002dV_002dFormats.html#RISC_002dV_002dFormats, accessed on 25/11/2019
+[4] RISC-V GNU Compiler Toolchain, https://github.com/riscv/riscv-gnu-toolchain, accessed on 25/11/2019
